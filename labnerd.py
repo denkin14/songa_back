@@ -1,20 +1,12 @@
 #!/usr/bin/python3
-""" This app builds features to provide
-information on where to find critical
-analytical chemistry instruments in Kenya
-"""
-
 import MySQLdb
-import requests
 import secrets
-import os
-import json
-from PIL import Image
 from flask_bcrypt import Bcrypt
-from flask import Flask, render_template, url_for, redirect, flash, session, request, json
-from forms import user_registration, user_login, instrument_enlist
+from flask import Flask, render_template, url_for, redirect, flash, session, request
+from apscheduler.schedulers.background import BackgroundScheduler
 
-conn = MySQLdb.connect(host="localhost", user="root", passwd="Musicgood#1_", db="labnerd_db")
+# Database connection
+conn = MySQLdb.connect(host="localhost", user="root", passwd="Musicgood#1_", db="nobuk_db")
 
 app = Flask(__name__)
 bcrypt = Bcrypt(app)
@@ -22,58 +14,59 @@ bcrypt = Bcrypt(app)
 app.config['SECRET_KEY'] = '414d09b5b79cd5230f799c811d2f28b6'
 
 @app.route("/home")
-def labnerd_home():
-    """ Home page for labnerd chemical analysis solutions """
+def nobuk_home():
     return render_template("home.html", user=session.get('client_id'))
 
-@app.route("/instruments/<category>")
-def labnerd_instruments(category):
-    """dispaly all instruments on offer"""
-    if category:
+@app.route("/group/create", methods=['GET', 'POST'])
+def create_group():
+    if request.method == 'POST':
+        name = request.form['name']
+        description = request.form['description']
         cur = conn.cursor()
-        cur.execute(f"""SELECT instruments.name,
-                instruments.price_per_sample, instruments.description, clients.name
-                FROM instruments INNER JOIN clients ON instruments.client_id = clients.id
-                INNER JOIN categories ON instruments.category_id = categories.id
-                WHERE categories.name = {category};""")
-        res = cur.fetchall()
-        cur.close()
-        return render_template("instruments.html", res=res, user=session.get('client_id'))
-
-    cur = conn.cursor()
-    cur.execute("""SELECT clients.surname, clients.firstname, instruments.name,
-                instruments.price_per_sample, instruments.description
-                FROM instruments INNER JOIN clients ON instruments.client_id = clients.id;""")
-    res = cur.fetchall()
-    cur.close()
-    return render_template("instruments.html", res=res, user=session.get('client_id'))
-
-@app.route("/notes")
-def labnerd_notes():
-    """ Display informative notes on varied technologies"""
-    return render_template("notes.html", user=session.get('client_id'))
-
-@app.route("/instrument_enlist", methods=['GET', 'POST'])
-def labnerd_instrument_enlist():
-    """The selling-user's form to enlist new instrument"""
-    instrument = instrument_enlist()
-
-    if instrument.validate_on_submit():
-        cur = conn.cursor()
-        cur.execute("""INSERT INTO instruments(name, price_per_day, price_per_week,
-                    price_per_sample, category_id, client_id, description, location, instrument_image)
-                    VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s);""",
-                    (instrument.name.data, instrument.price_per_day.data,
-                    instrument.price_per_week.data, instrument.price_per_sample.data, 1,
-                    session['client_id'], instrument.description.data, instrument.location, instrument_image.data))
+        cur.execute("INSERT INTO groups (name, description, admin_id) VALUES (%s, %s, %s)",
+                    (name, description, session.get('client_id')))
         conn.commit()
-        return redirect(url_for('labnerd_instruments'))
-    return render_template("instrument_enlist.html", form=instrument,
-                           title='Enlist instrument', user=session.get('client_id'))
+        cur.close()
+        flash('Group created successfully!', 'success')
+        return redirect(url_for('group_list'))
+    return render_template("create_group.html")
+
+@app.route("/groups")
+def group_list():
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM groups WHERE admin_id = %s", (session.get('client_id'),))
+    groups = cur.fetchall()
+    cur.close()
+    return render_template("group_list.html", groups=groups)
+
+@app.route("/payment/create", methods=['GET', 'POST'])
+def create_payment():
+    if request.method == 'POST':
+        group_id = request.form['group_id']
+        amount = request.form['amount']
+        cur = conn.cursor()
+        cur.execute("INSERT INTO payments (group_id, member_id, amount, status) VALUES (%s, %s, %s, 'PENDING')",
+                    (group_id, session.get('client_id'), amount))
+        conn.commit()
+        cur.close()
+        flash('Payment link created successfully!', 'success')
+        return redirect(url_for('payment_list'))
+    cur = conn.cursor()
+    cur.execute("SELECT id, name FROM groups WHERE admin_id = %s", (session.get('client_id'),))
+    groups = cur.fetchall()
+    cur.close()
+    return render_template("create_payment.html", groups=groups)
+
+@app.route("/payments")
+def payment_list():
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM payments WHERE member_id = %s", (session.get('client_id'),))
+    payments = cur.fetchall()
+    cur.close()
+    return render_template("payment_list.html", payments=payments)
 
 @app.route("/user_registration", methods=['GET', 'POST'])
-def labnerd_user_registration():
-    """form to signup for a labnerd account"""
+def nobuk_user_registration():
     newUser = user_registration()
     
     if newUser.validate_on_submit():
@@ -84,18 +77,12 @@ def labnerd_user_registration():
                     newUser.email.data, hashpee, newUser.buying_user.data, newUser.selling_user.data))
         conn.commit()
         flash(f'Your account was created successfully! You can now login', 'lightgreen')
-        return redirect(url_for('labnerd_login'))
+        return redirect(url_for('nobuk_login'))
 
     return render_template("user_registration.html", title='Create Account', form=newUser)
 
-@app.route("/selling_user_dashboard")
-def labnerd_selling_user_dashboard():
-    """show a list of enlisted instruments, bookings  and sales"""
-    return render_template("selling_user_dashboard.html", user=session.get('client_id'))
-
 @app.route("/login", methods=['GET', 'POST'])
-def labnerd_login():
-    """ login to be able to buy and enlist instruments and view own dashboard """
+def nobuk_login():
     login = user_login()
     
     if login.validate_on_submit():
@@ -106,28 +93,21 @@ def labnerd_login():
             if email == login.email.data and bcrypt.check_password_hash(password, login.password.data):
                 flash(f'Succesful Login!', 'lightgreen')
                 session['client_id'] = client_id
-                return redirect(url_for('labnerd_home'))
+                return redirect(url_for('nobuk_home'))
         flash(f'Incorrect email or password', 'red')
         cur.close()
     return render_template("login.html", form=login, title='Login')
 
 @app.route("/logout")
-def labnerd_logout():
-    """ Log user of their account """
+def nobuk_logout():
     session.pop('client_id', None)
-    return redirect(url_for("labnerd_home"))
-
-@app.route("/email")
-def labnerd_email():
-    """ send email to labnerd.com """
-    pass
+    return redirect(url_for("nobuk_home"))
 
 @app.route("/profile", methods=['GET', 'POST'])
-def labnerd_profile():
-    """ send email to labnerd.com """
+def nobuk_profile():
     if not session.get('client_id'):
         flash('you must be logged in to see your account', 'rgba(255, 0, 0, .8)')
-        return redirect(url_for('labnerd_login'))
+        return redirect(url_for('nobuk_login'))
     else:
         prof_pic = 'default.jpg'
         if request.method == "POST":
@@ -143,14 +123,19 @@ def labnerd_profile():
                 pic.save(pic_path)
         return render_template("profile.html", user=session.get('client_id'), prof_pic=prof_pic)
 
-@app.route("/callback", methods=['POST'])
-def callback():
-    """ mpeas callback"""
-    data = request.json
-    with open("requests.txt", 'w') as f:
-        f.write(data["name"])
-    return data
+# Background Scheduler for Automated Reminders
+def send_reminders():
+    with app.app_context():
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM payments WHERE status = 'PENDING'")
+        pending_payments = cur.fetchall()
+        for payment in pending_payments:
+            # Send reminder logic here
+        cur.close()
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=send_reminders, trigger="interval", minutes=60)
+scheduler.start()
 
 if __name__ == "__main__":
-    """ labnerd GoLive """
     app.run(host="0.0.0.0", port=5000, debug=True)
